@@ -41,10 +41,10 @@ git clone https://github.com/UncleRazavi/G25_Telegram_bot.git
 cd G25_Telegram_Bot
 
 
----
-
+```
 ### **LICENSE**
 
 MIT License
+
 
 Copyright (c) 2025 Hossein Razavi
