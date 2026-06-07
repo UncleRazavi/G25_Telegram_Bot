@@ -8,12 +8,12 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ConversationHandler, ContextTypes
 )
-from nnls_script import run_nnls  # Your NNLS functions
-from closest_script import run_closest  # Your closest finder functions
-from pca_script import run_pca  # Your PCA functions
+from nnls_script import run_nnls  
+from closest_script import run_closest 
+from pca_script import run_pca  
 
 # ---------------- Bot Token ----------------
-TOKEN = os.environ.get("BOT_TOKEN")  # Set this in Railway environment
+TOKEN = os.environ.get("BOT_TOKEN")  
 
 # ---------------- Reference Data ----------------
 ANCIENT_REF_PATH = "/Data/Global25_PCA_scaled (Ancient Individuals).csv"
