@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  g25-telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: g25-telegram-bot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATA_PATH: /app/Data
+      TEMP_DIR: /app/temp
+    volumes:
+      # Mount data directory
+      - ./Data:/app/Data:ro
+      # Mount logs directory
+      - ./logs:/app/logs
+      # Mount temp directory for processing
+      - ./temp:/app/temp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.getenv('BOT_TOKEN') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # Uncomment to limit resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 256M
