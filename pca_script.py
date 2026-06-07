@@ -1,163 +1,116 @@
-# pca_script.py
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 
-def run_pca(
-    sample_path,
-    reference_path,
+def run_pca_clean(
+    sample_df,
+    reference_df,
+    label_top_n=15,
     save_plot=True,
-    plot_file="pca_plot.png",
-    n_labels=20
+    plot_file="pca_clean.png"
 ):
 
     # -----------------------------
-    # Load data
+    # Combine
     # -----------------------------
-    if isinstance(sample_path, pd.DataFrame):
-        sample_df = sample_path.copy()
-    else:
-        sample_df = pd.read_csv(sample_path, index_col=0)
-
-    if isinstance(reference_path, pd.DataFrame):
-        ref_df = reference_path.copy()
-    else:
-        ref_df = pd.read_csv(reference_path, index_col=0)
+    combined = pd.concat([reference_df, sample_df])
+    combined = combined.fillna(combined.mean(numeric_only=True))
 
     # -----------------------------
-    # Combine datasets
+    # Standardize + PCA
     # -----------------------------
-    combined_df = pd.concat([ref_df, sample_df])
+    X = StandardScaler().fit_transform(combined.values)
 
-    # Fill missing values if any
-    combined_df = combined_df.fillna(combined_df.mean())
-
-    # -----------------------------
-    # Standardize
-    # -----------------------------
-    scaler = StandardScaler()
-    X = scaler.fit_transform(combined_df.values)
-
-    # -----------------------------
-    # PCA
-    # -----------------------------
     pca = PCA(n_components=2)
     coords = pca.fit_transform(X)
 
-    pca_df = pd.DataFrame(
-        coords,
-        columns=["PC1", "PC2"],
-        index=combined_df.index
-    )
+    pca_df = pd.DataFrame(coords, columns=["PC1", "PC2"], index=combined.index)
 
-    pca_df["Type"] = (
-        ["Reference"] * len(ref_df)
-        + ["Sample"] * len(sample_df)
-    )
+    pca_df["Type"] = ["Reference"] * len(reference_df) + ["Sample"] * len(sample_df)
+
+    # -----------------------------
+    # Split
+    # -----------------------------
+    ref = pca_df[pca_df["Type"] == "Reference"].copy()
+    samp = pca_df[pca_df["Type"] == "Sample"].copy()
+
+    # -----------------------------
+    # Find closest refs to sample
+    # -----------------------------
+    if len(samp) > 0:
+        sx, sy = samp.iloc[0][["PC1", "PC2"]]
+
+        ref["dist"] = np.sqrt((ref["PC1"] - sx)**2 + (ref["PC2"] - sy)**2)
+        closest = ref.nsmallest(label_top_n, "dist")
+    else:
+        closest = ref.iloc[:0]
 
     # -----------------------------
     # Plot
     # -----------------------------
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(11, 8))
 
-    ref_mask = pca_df["Type"] == "Reference"
-    sample_mask = pca_df["Type"] == "Sample"
-
-    # References
+    # References (light, no labels)
     plt.scatter(
-        pca_df.loc[ref_mask, "PC1"],
-        pca_df.loc[ref_mask, "PC2"],
+        ref["PC1"], ref["PC2"],
+        s=25,
+        alpha=0.25,
         c="steelblue",
-        alpha=0.6,
-        s=40,
         label="Reference"
     )
 
-    # Samples
+    # Highlight closest refs
     plt.scatter(
-        pca_df.loc[sample_mask, "PC1"],
-        pca_df.loc[sample_mask, "PC2"],
+        closest["PC1"], closest["PC2"],
+        s=80,
+        alpha=0.9,
+        c="darkblue",
+        label="Closest references"
+    )
+
+    # Sample (highlighted star)
+    plt.scatter(
+        samp["PC1"], samp["PC2"],
+        s=200,
         c="red",
-        s=180,
         marker="*",
-        edgecolors="black",
+        edgecolor="black",
         label="Sample"
     )
 
     # -----------------------------
-    # Label samples
+    # ONLY label closest refs
     # -----------------------------
-    for idx in pca_df[sample_mask].index:
-        plt.annotate(
+    for idx, row in closest.iterrows():
+        plt.text(
+            row["PC1"],
+            row["PC2"],
             idx,
-            (
-                pca_df.loc[idx, "PC1"],
-                pca_df.loc[idx, "PC2"]
-            ),
-            fontsize=11,
-            fontweight="bold"
+            fontsize=9
         )
 
     # -----------------------------
-    # Label closest references
+    # Variance labels
     # -----------------------------
-    for sample_name in pca_df[sample_mask].index:
+    evr = pca.explained_variance_ratio_ * 100
 
-        sample_x = pca_df.loc[sample_name, "PC1"]
-        sample_y = pca_df.loc[sample_name, "PC2"]
-
-        refs = pca_df[ref_mask].copy()
-
-        refs["Distance"] = np.sqrt(
-            (refs["PC1"] - sample_x) ** 2 +
-            (refs["PC2"] - sample_y) ** 2
-        )
-
-        closest = refs.nsmallest(n_labels, "Distance")
-
-        for idx, row in closest.iterrows():
-            plt.annotate(
-                idx,
-                (row["PC1"], row["PC2"]),
-                fontsize=8,
-                alpha=0.8
-            )
-
-        print(f"\nClosest populations to {sample_name}:")
-        print("-" * 50)
-
-        for idx, row in closest.iterrows():
-            print(f"{idx:<30} {row['Distance']:.4f}")
-
-    # -----------------------------
-    # Labels
-    # -----------------------------
-    var1 = pca.explained_variance_ratio_[0] * 100
-    var2 = pca.explained_variance_ratio_[1] * 100
-
-    plt.xlabel(f"PC1 ({var1:.2f}% variance)")
-    plt.ylabel(f"PC2 ({var2:.2f}% variance)")
+    plt.xlabel(f"PC1 ({evr[0]:.2f}%)")
+    plt.ylabel(f"PC2 ({evr[1]:.2f}%)")
 
     plt.title("PCA: Sample vs Reference Populations")
+    plt.grid(alpha=0.2)
     plt.legend()
-    plt.grid(alpha=0.3)
 
     plt.tight_layout()
 
     # -----------------------------
-    # Save / Show
+    # Save
     # -----------------------------
     if save_plot:
-        plt.savefig(
-            plot_file,
-            dpi=300,
-            bbox_inches="tight"
-        )
+        plt.savefig(plot_file, dpi=300, bbox_inches="tight")
         plt.close()
         return plot_file
 
