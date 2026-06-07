@@ -11,8 +11,16 @@ TARGET_SOURCES = {
 }
 
 def run_nnls(target_path, ancient_path, save_plot=False):
-    target_data = pd.read_csv(target_path, index_col=0)
-    ancient_data = pd.read_csv(ancient_path, index_col=0)
+    # Handle both DataFrame and file path inputs
+    if isinstance(target_path, pd.DataFrame):
+        target_data = target_path
+    else:
+        target_data = pd.read_csv(target_path, index_col=0)
+    
+    if isinstance(ancient_path, pd.DataFrame):
+        ancient_data = ancient_path.copy()
+    else:
+        ancient_data = pd.read_csv(ancient_path, index_col=0)
     ancient_data['Population'] = ancient_data.index.to_series().apply(lambda x: x.split(':')[0])
     ancient_data = ancient_data[ancient_data['Population'].isin(TARGET_SOURCES)].copy()
     numeric_columns = ancient_data.select_dtypes(include=[np.number]).columns

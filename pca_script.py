@@ -6,9 +6,16 @@ from sklearn.decomposition import PCA
 import seaborn as sns
 
 def run_pca(sample_path, reference_path, save_plot=True):
-    # Load data
-    sample_df = pd.read_csv(sample_path, index_col=0)
-    ref_df = pd.read_csv(reference_path, index_col=0)
+    # Handle both DataFrame and file path inputs
+    if isinstance(sample_path, pd.DataFrame):
+        sample_df = sample_path
+    else:
+        sample_df = pd.read_csv(sample_path, index_col=0)
+    
+    if isinstance(reference_path, pd.DataFrame):
+        ref_df = reference_path
+    else:
+        ref_df = pd.read_csv(reference_path, index_col=0)
 
     # Combine data for PCA
     combined_df = pd.concat([ref_df, sample_df])

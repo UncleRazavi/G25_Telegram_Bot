@@ -4,8 +4,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def run_closest(sample_path, reference_path, top_n=5, save_plot=False):
-    sample_df = pd.read_csv(sample_path, index_col=0)
-    ref_df = pd.read_csv(reference_path, index_col=0)
+    # Handle both DataFrame and file path inputs
+    if isinstance(sample_path, pd.DataFrame):
+        sample_df = sample_path
+    else:
+        sample_df = pd.read_csv(sample_path, index_col=0)
+    
+    if isinstance(reference_path, pd.DataFrame):
+        ref_df = reference_path
+    else:
+        ref_df = pd.read_csv(reference_path, index_col=0)
 
     results_texts = []
     plot_files = []

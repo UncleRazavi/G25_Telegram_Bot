@@ -8,6 +8,7 @@ import os
 import io
 import sys
 import logging
+import numpy as np
 from pathlib import Path
 from typing import Tuple, List
 import pandas as pd
@@ -117,6 +118,8 @@ NNLS_INPUT, NNLS_SELECT = range(2)
 NNLS_CHOICE, NNLS_TARGET = range(2, 4)
 CLOSE_CHOICE, CLOSE_SAMPLE = range(4, 6)
 PCA_CHOICE, PCA_SAMPLE = range(6, 8)
+COMPARE_POP1, COMPARE_POP2 = range(8, 10)
+SEARCH_INPUT, SEARCH_SELECT = range(10, 12)
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -126,24 +129,247 @@ def suggest_populations(user_input: str, populations: List[str], n: int = 5) -> 
     """Suggest population names based on user input"""
     return difflib.get_close_matches(user_input, populations, n=n, cutoff=0.3)
 
+# ============================================================================
+# POPULATION SEARCH & AVERAGING FUNCTIONS
+# ============================================================================
+
+def get_all_populations() -> Tuple[List[str], List[str]]:
+    """Get lists of all ancient and modern populations"""
+    # Ancient populations - extracted from index
+    ancient_pops = list(set([name.split(':')[0] for name in ancient_df.index]))
+    ancient_pops.sort()
+    
+    # Modern populations - all index values
+    modern_pops = list(modern_df.index)
+    modern_pops.sort()
+    
+    return ancient_pops, modern_pops
+
+def search_population(user_input: str) -> dict:
+    """
+    Search for a population in both ancient and modern datasets.
+    Returns a dictionary with search results from both datasets.
+    """
+    ancient_pops, modern_pops = get_all_populations()
+    
+    # Search in ancient populations
+    ancient_matches = difflib.get_close_matches(user_input, ancient_pops, n=10, cutoff=0.3)
+    
+    # Search in modern populations
+    modern_matches = difflib.get_close_matches(user_input, modern_pops, n=10, cutoff=0.3)
+    
+    return {
+        'ancient': ancient_matches,
+        'modern': modern_matches
+    }
+
+def get_population_average(population_name: str, dataset_type: str = 'ancient') -> Tuple[pd.DataFrame, dict]:
+    """
+    Calculate average PCA coordinates for a population.
+    
+    Args:
+        population_name: Name of the population
+        dataset_type: 'ancient' or 'modern'
+    
+    Returns:
+        Tuple of (average_df, stats_dict)
+    """
+    if dataset_type == 'ancient':
+        # Get all samples for this population
+        pop_samples = ancient_df[ancient_df['Population'] == population_name].drop(columns=['Population'])
+        if len(pop_samples) == 0:
+            return None, None
+        
+        average = pop_samples.mean()
+        stats = {
+            'population': population_name,
+            'dataset': 'Ancient',
+            'sample_count': len(pop_samples),
+            'pc_components': len(average)
+        }
+    else:  # modern
+        # For modern populations, the population name is the index
+        pop_samples = modern_df.loc[modern_df.index == population_name]
+        if len(pop_samples) == 0:
+            return None, None
+        
+        average = pop_samples.iloc[0]
+        stats = {
+            'population': population_name,
+            'dataset': 'Modern',
+            'sample_count': 1,
+            'pc_components': len(average)
+        }
+    
+    return pd.DataFrame([average], index=[population_name]), stats
+
+def format_population_data(population_name: str, avg_df: pd.DataFrame, stats: dict) -> str:
+    """Format population average data for display"""
+    result = f"{'=' * 60}\n"
+    result += f"POPULATION: {population_name} ({stats['dataset']})\n"
+    result += f"{'=' * 60}\n"
+    result += f"Samples: {stats['sample_count']}\n"
+    result += f"PCA Components: {stats['pc_components']}\n"
+    result += f"\nPCA COORDINATES:\n"
+    result += "-" * 60 + "\n"
+    
+    # Display each PC component
+    for i, col in enumerate(avg_df.columns, 1):
+        value = avg_df.iloc[0, i-1]
+        result += f"PC{i:2d}: {value:10.6f}\n"
+    
+    return result
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel the current operation"""
     await update.message.reply_text("Operation cancelled.")
     logger.info(f"Operation cancelled by user {update.effective_user.id}")
     return ConversationHandler.END
 
+# ============================================================================
+# SEARCH POPULATION CONVERSATION
+# ============================================================================
+
+async def search_population_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start population search conversation"""
+    await update.message.reply_text(
+        "🔍 Search for ancient or modern population\n\n"
+        "Type the population name you want to search (e.g., 'persian', 'albania', etc.):"
+    )
+    logger.info(f"User {update.effective_user.id} started population search")
+    return SEARCH_INPUT
+
+async def search_population_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process population search input"""
+    user_input = update.message.text.strip()
+    
+    if not user_input:
+        await update.message.reply_text("Please enter a population name:")
+        return SEARCH_INPUT
+    
+    # Search for population
+    results = search_population(user_input)
+    all_matches = results['ancient'] + results['modern']
+    
+    if not all_matches:
+        await update.message.reply_text(
+            f"❌ No populations found matching '{user_input}'.\n\n"
+            "Try with a different spelling or /cancel to exit."
+        )
+        logger.warning(f"No population matches for: {user_input}")
+        return SEARCH_INPUT
+    
+    # Store results and show suggestions
+    context.user_data['search_results'] = {
+        'ancient': results['ancient'],
+        'modern': results['modern'],
+        'all': all_matches
+    }
+    
+    text = f"✅ Found {len(all_matches)} population(s) matching '{user_input}':\n\n"
+    
+    if results['ancient']:
+        text += "📜 ANCIENT POPULATIONS:\n"
+        for i, pop in enumerate(results['ancient'], 1):
+            text += f"{i}. {pop}\n"
+    
+    if results['modern']:
+        start_idx = len(results['ancient']) + 1
+        text += "\n🌍 MODERN POPULATIONS:\n"
+        for i, pop in enumerate(results['modern'], 1):
+            text += f"{start_idx + i - 1}. {pop}\n"
+    
+    text += "\nReply with the number to get detailed information:"
+    await update.message.reply_text(text)
+    return SEARCH_SELECT
+
+async def search_population_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process population selection and display data"""
+    try:
+        choice = int(update.message.text) - 1
+        all_matches = context.user_data['search_results']['all']
+        
+        if choice < 0 or choice >= len(all_matches):
+            await update.message.reply_text(
+                "Invalid selection. Please reply with a valid number:"
+            )
+            return SEARCH_SELECT
+        
+        selected_pop = all_matches[choice]
+        
+        # Determine which dataset the population is from
+        results = context.user_data['search_results']
+        if selected_pop in results['ancient']:
+            avg_df, stats = get_population_average(selected_pop, 'ancient')
+            dataset_type = 'ancient'
+        else:
+            avg_df, stats = get_population_average(selected_pop, 'modern')
+            dataset_type = 'modern'
+        
+        if avg_df is None:
+            await update.message.reply_text(f"Error: Could not retrieve data for {selected_pop}")
+            return ConversationHandler.END
+        
+        # Format and send the data
+        formatted_data = format_population_data(selected_pop, avg_df, stats)
+        await update.message.reply_text(formatted_data)
+        
+        # Check if population exists in both datasets
+        ancient_pops, modern_pops = get_all_populations()
+        in_ancient = selected_pop in ancient_pops
+        in_modern = selected_pop in modern_pops
+        
+        if in_ancient and in_modern:
+            # Get data from other dataset
+            other_type = 'modern' if dataset_type == 'ancient' else 'ancient'
+            other_avg_df, other_stats = get_population_average(selected_pop, other_type)
+            if other_avg_df is not None:
+                other_data = format_population_data(selected_pop, other_avg_df, other_stats)
+                await update.message.reply_text(f"\n⚠️ ALSO FOUND IN {other_type.upper()} DATA:\n\n{other_data}")
+        
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'search',
+            'population': selected_pop,
+            'dataset': dataset_type,
+            'timestamp': pd.Timestamp.now()
+        })
+        
+        logger.info(f"Population search completed for {selected_pop}")
+        
+    except (ValueError, IndexError):
+        await update.message.reply_text(
+            "Invalid input. Please reply with the number of your choice:"
+        )
+        return SEARCH_SELECT
+    except Exception as e:
+        logger.error(f"Error in search_population_select: {e}")
+        await update.message.reply_text(f"Error processing selection: {str(e)}")
+    
+    return ConversationHandler.END
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the /start command is issued"""
     welcome_message = """
-Welcome to the G25 Ancestry Analysis Bot! 🧬
+Welcome to the G25 Ancestry Analysis Bot!
 
-Available commands:
+Available Analysis Commands:
 /nnls - NNLS ancestry decomposition (ancient populations)
 /closest - Find closest populations (ancient + modern)
 /pca - PCA visualization (modern populations)
+/search - Search for population data and averages
 /nnls_suggest - Search ancient populations by name
+/compare - Compare two populations
+/population_stats - Show population statistics
+/history - View your analysis history
+
+Other Commands:
 /help - Show detailed help
 /cancel - Cancel current operation
+
+Type /help to learn more about each feature.
 """
     await update.message.reply_text(welcome_message)
     logger.info(f"User {update.effective_user.id} started the bot")
@@ -151,26 +377,46 @@ Available commands:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send detailed help information"""
     help_text = """
-📊 **NNLS Analysis** (/nnls)
+ANALYSIS TOOLS
+
+NNLS Analysis (/nnls)
 Decomposes your sample ancestry using ancient populations
 Input: CSV with PCA coordinates
 Output: Text results + Pie chart
 
-🔍 **Closest Finder** (/closest)
+Closest Finder (/closest)
 Finds populations most similar to your sample
 Input: CSV with PCA coordinates
 Output: Text results + Bar chart
 
-📈 **PCA Visualization** (/pca)
+PCA Visualization (/pca)
 Projects your sample onto modern population PCA space
 Input: CSV with PCA coordinates
 Output: Scatter plot
 
-🏛️ **Population Search** (/nnls_suggest)
+Population Search (/search) ⭐ NEW
+Search for ancient and modern populations by name
+Get averaged PCA coordinates for any population
+Shows data from both ancient and modern datasets
+Example: /search → "persian" → select population
+
+Population Suggestion (/nnls_suggest)
 Search for ancient populations by name
 Provides suggestions for similar names
 
-📝 **Data Format**:
+Compare Populations (/compare)
+Compare genetic distance between two populations
+Shows detailed statistics and visualization
+
+Population Statistics (/population_stats)
+View summary statistics of available populations
+Useful for understanding dataset composition
+
+Analysis History (/history)
+View your last 10 recent analyses
+Helpful for tracking your research
+
+DATA FORMAT:
 CSV files should have populations/samples as rows and PCA components as columns
 Example:
 ```
@@ -178,6 +424,12 @@ Sample,PC1,PC2,PC3,...
 Sample1,0.1,0.2,0.3,...
 Sample2,-0.1,0.3,0.1,...
 ```
+
+TIPS:
+- Use 'paste' to send CSV data directly
+- Use 'upload' to send a CSV file
+- /cancel stops the current operation
+- Your analyses are saved for history
 """
     await update.message.reply_text(help_text)
     logger.info(f"User {update.effective_user.id} requested help")
@@ -228,7 +480,7 @@ async def nnls_suggest_select(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         target_df = ancient_averages.loc[[selected_pop]]
-        await update.message.reply_text("⏳ Running NNLS analysis...")
+        await update.message.reply_text("Running NNLS analysis...")
 
         text_result, plot_files = run_nnls(target_df, ancient_df, save_plot=True)
         
@@ -241,10 +493,19 @@ async def nnls_suggest_select(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await update.message.reply_document(f)
                 os.remove(plot_file)
         
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'nnls',
+            'population': selected_pop,
+            'timestamp': pd.Timestamp.now()
+        })
+        
         logger.info(f"NNLS analysis completed for {selected_pop}")
     except Exception as e:
         logger.error(f"Error in NNLS analysis: {e}")
-        await update.message.reply_text(f"❌ Error during analysis: {str(e)}")
+        await update.message.reply_text(f"Error during analysis: {str(e)}")
     
     return ConversationHandler.END
 
@@ -289,7 +550,7 @@ async def nnls_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             context.user_data['target_df'] = pd.read_csv(path, index_col=0)
             os.remove(path)
 
-        await update.message.reply_text("⏳ Running NNLS analysis...")
+        await update.message.reply_text("Running NNLS analysis...")
         text_result, plot_files = run_nnls(context.user_data['target_df'], ancient_df, save_plot=True)
         
         await update.message.reply_text(text_result[:4000])
@@ -299,10 +560,19 @@ async def nnls_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                     await update.message.reply_document(f)
                 os.remove(plot_file)
         
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'nnls',
+            'samples': len(context.user_data['target_df']),
+            'timestamp': pd.Timestamp.now()
+        })
+        
         logger.info(f"NNLS analysis completed for user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error in NNLS target processing: {e}")
-        await update.message.reply_text(f"❌ Error processing data: {str(e)}")
+        await update.message.reply_text(f"Error processing data: {str(e)}")
     
     return ConversationHandler.END
 
@@ -347,7 +617,7 @@ async def closest_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['sample_df'] = pd.read_csv(path, index_col=0)
             os.remove(path)
 
-        await update.message.reply_text("⏳ Finding closest populations...")
+        await update.message.reply_text("Finding closest populations...")
         text_result, plot_files = run_closest(context.user_data['sample_df'], both_df, save_plot=True)
         
         await update.message.reply_text(text_result[:4000])
@@ -357,10 +627,19 @@ async def closest_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await update.message.reply_document(f)
                 os.remove(plot_file)
         
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'closest',
+            'samples': len(context.user_data['sample_df']),
+            'timestamp': pd.Timestamp.now()
+        })
+        
         logger.info(f"Closest finder analysis completed for user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error in closest sample processing: {e}")
-        await update.message.reply_text(f"❌ Error processing data: {str(e)}")
+        await update.message.reply_text(f"Error processing data: {str(e)}")
     
     return ConversationHandler.END
 
@@ -405,7 +684,7 @@ async def pca_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             context.user_data['sample_df'] = pd.read_csv(path, index_col=0)
             os.remove(path)
 
-        await update.message.reply_text("⏳ Generating PCA visualization...")
+        await update.message.reply_text("Generating PCA visualization...")
         plot_file = run_pca(context.user_data['sample_df'], modern_df, save_plot=True)
         
         if plot_file and os.path.exists(plot_file):
@@ -413,10 +692,208 @@ async def pca_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 await update.message.reply_document(f)
             os.remove(plot_file)
         
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'pca',
+            'samples': len(context.user_data['sample_df']),
+            'timestamp': pd.Timestamp.now()
+        })
+        
         logger.info(f"PCA visualization completed for user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error in PCA sample processing: {e}")
-        await update.message.reply_text(f"❌ Error processing data: {str(e)}")
+        await update.message.reply_text(f"Error processing data: {str(e)}")
+    
+    return ConversationHandler.END
+
+# ============================================================================
+# POPULATION STATISTICS & COMPARISON
+# ============================================================================
+
+async def population_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show statistics about available populations"""
+    try:
+        stats_text = "POPULATION STATISTICS\n"
+        stats_text += "=" * 50 + "\n\n"
+        
+        stats_text += f"ANCIENT POPULATIONS\n"
+        stats_text += "-" * 30 + "\n"
+        stats_text += f"Total populations: {len(ANCIENT_POPULATIONS)}\n"
+        stats_text += f"Total ancient samples: {len(ancient_df)}\n"
+        stats_text += f"PCA components: {len(ancient_df.columns) - 1 if 'Population' in ancient_df.columns else len(ancient_df.columns)}\n\n"
+        
+        # Show sample of populations
+        stats_text += "Sample populations:\n"
+        for pop in sorted(ANCIENT_POPULATIONS)[:10]:
+            pop_count = len(ancient_df[ancient_df['Population'] == pop]) if 'Population' in ancient_df.columns else 1
+            stats_text += f"  - {pop}: {pop_count} samples\n"
+        
+        if len(ANCIENT_POPULATIONS) > 10:
+            stats_text += f"  ... and {len(ANCIENT_POPULATIONS) - 10} more\n\n"
+        
+        stats_text += f"\nMODERN POPULATIONS\n"
+        stats_text += "-" * 30 + "\n"
+        stats_text += f"Total modern samples: {len(modern_df)}\n"
+        stats_text += f"PCA components: {len(modern_df.columns)}\n"
+        
+        await update.message.reply_text(stats_text)
+        logger.info(f"User {update.effective_user.id} requested population statistics")
+    except Exception as e:
+        logger.error(f"Error in population_stats: {e}")
+        await update.message.reply_text(f"Error retrieving statistics: {str(e)}")
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's analysis history"""
+    try:
+        if 'user_history' not in context.user_data or not context.user_data['user_history']:
+            await update.message.reply_text("No analysis history yet. Start by running an analysis!")
+            return
+        
+        history_list = context.user_data['user_history'][-10:]  # Last 10
+        history_text = "YOUR ANALYSIS HISTORY (Last 10)\n"
+        history_text += "=" * 50 + "\n\n"
+        
+        for i, entry in enumerate(reversed(history_list), 1):
+            history_text += f"{i}. {entry['type'].upper()}\n"
+            if 'population' in entry:
+                history_text += f"   Population: {entry['population']}\n"
+            if 'samples' in entry:
+                history_text += f"   Samples: {entry['samples']}\n"
+            history_text += f"   Time: {entry['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        
+        await update.message.reply_text(history_text)
+        logger.info(f"User {update.effective_user.id} viewed analysis history")
+    except Exception as e:
+        logger.error(f"Error in history: {e}")
+        await update.message.reply_text(f"Error retrieving history: {str(e)}")
+
+async def compare_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start population comparison"""
+    await update.message.reply_text(
+        "Compare two ancient populations.\n"
+        "Enter the first population name (or /cancel to exit):"
+    )
+    logger.info(f"User {update.effective_user.id} started population comparison")
+    return COMPARE_POP1
+
+async def compare_pop1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Get first population for comparison"""
+    user_input = update.message.text
+    suggestions = suggest_populations(user_input, ANCIENT_POPULATIONS, n=5)
+    
+    if not suggestions:
+        await update.message.reply_text("No matches found. Try again with different spelling:")
+        return COMPARE_POP1
+    
+    if len(suggestions) == 1:
+        context.user_data['compare_pop1'] = suggestions[0]
+        await update.message.reply_text(
+            f"Selected: {suggestions[0]}\n\n"
+            "Now enter the second population name:"
+        )
+        return COMPARE_POP2
+    else:
+        context.user_data['compare_suggestions'] = suggestions
+        text = "Multiple matches found:\n"
+        for i, pop in enumerate(suggestions, 1):
+            text += f"{i}. {pop}\n"
+        text += "\nReply with the number:"
+        await update.message.reply_text(text)
+        context.user_data['compare_stage'] = 'pop1_select'
+        return COMPARE_POP1
+
+async def compare_pop_select(update: Update, context: ContextTypes.DEFAULT_TYPE, stage: str) -> int:
+    """Handle population selection"""
+    try:
+        choice = int(update.message.text) - 1
+        suggestions = context.user_data.get('compare_suggestions', [])
+        if choice < 0 or choice >= len(suggestions):
+            raise ValueError("Invalid choice")
+        selected = suggestions[choice]
+        
+        if stage == 'pop1_select':
+            context.user_data['compare_pop1'] = selected
+            await update.message.reply_text(
+                f"Selected: {selected}\n\n"
+                "Now enter the second population name:"
+            )
+            return COMPARE_POP2
+        else:  # pop2_select
+            context.user_data['compare_pop2'] = selected
+            # Perform comparison
+            return await perform_comparison(update, context)
+    except (ValueError, IndexError):
+        await update.message.reply_text("Invalid selection. Reply with the number:")
+        return COMPARE_POP1 if stage == 'pop1_select' else COMPARE_POP2
+
+async def compare_pop2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Get second population for comparison"""
+    user_input = update.message.text
+    suggestions = suggest_populations(user_input, ANCIENT_POPULATIONS, n=5)
+    
+    if not suggestions:
+        await update.message.reply_text("No matches found. Try again:")
+        return COMPARE_POP2
+    
+    if len(suggestions) == 1:
+        context.user_data['compare_pop2'] = suggestions[0]
+        return await perform_comparison(update, context)
+    else:
+        context.user_data['compare_suggestions'] = suggestions
+        context.user_data['compare_stage'] = 'pop2_select'
+        text = "Multiple matches found:\n"
+        for i, pop in enumerate(suggestions, 1):
+            text += f"{i}. {pop}\n"
+        text += "\nReply with the number:"
+        await update.message.reply_text(text)
+        return COMPARE_POP2
+
+async def perform_comparison(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Perform and display population comparison"""
+    try:
+        pop1 = context.user_data.get('compare_pop1')
+        pop2 = context.user_data.get('compare_pop2')
+        
+        if not pop1 or not pop2:
+            await update.message.reply_text("Error: populations not selected properly")
+            return ConversationHandler.END
+        
+        await update.message.reply_text("Comparing populations...")
+        
+        # Get population averages
+        pop1_data = ancient_averages.loc[[pop1]]
+        pop2_data = ancient_averages.loc[[pop2]]
+        
+        # Calculate Euclidean distance
+        distance = np.sqrt(((pop1_data.values - pop2_data.values) ** 2).sum())
+        
+        # Create comparison report
+        report = f"POPULATION COMPARISON\n"
+        report += "=" * 50 + "\n"
+        report += f"Population 1: {pop1}\n"
+        report += f"Population 2: {pop2}\n"
+        report += f"Genetic Distance: {distance:.4f}\n"
+        report += f"Similarity: {'High' if distance < 0.1 else 'Moderate' if distance < 0.5 else 'Low'}\n"
+        
+        await update.message.reply_text(report)
+        
+        # Store in history
+        if 'user_history' not in context.user_data:
+            context.user_data['user_history'] = []
+        context.user_data['user_history'].append({
+            'type': 'compare',
+            'pop1': pop1,
+            'pop2': pop2,
+            'distance': distance,
+            'timestamp': pd.Timestamp.now()
+        })
+        
+        logger.info(f"Comparison completed for {pop1} vs {pop2}")
+    except Exception as e:
+        logger.error(f"Error in population comparison: {e}")
+        await update.message.reply_text(f"Error during comparison: {str(e)}")
     
     return ConversationHandler.END
 
@@ -467,15 +944,45 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
+    compare_conv = ConversationHandler(
+        entry_points=[CommandHandler('compare', compare_start)],
+        states={
+            COMPARE_POP1: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, compare_pop1),
+                MessageHandler(filters.Regex(r'^\d+$'), 
+                    lambda u, c: compare_pop_select(u, c, 'pop1_select'))
+            ],
+            COMPARE_POP2: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, compare_pop2),
+                MessageHandler(filters.Regex(r'^\d+$'),
+                    lambda u, c: compare_pop_select(u, c, 'pop2_select'))
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
+    search_conv = ConversationHandler(
+        entry_points=[CommandHandler('search', search_population_start)],
+        states={
+            SEARCH_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_population_input)],
+            SEARCH_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_population_select)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
     # Add command handlers
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('population_stats', population_stats))
+    app.add_handler(CommandHandler('history', history))
     
     # Add conversation handlers
     app.add_handler(nnls_suggest_conv)
     app.add_handler(nnls_conv)
     app.add_handler(closest_conv)
     app.add_handler(pca_conv)
+    app.add_handler(compare_conv)
+    app.add_handler(search_conv)
     app.add_handler(CommandHandler('cancel', cancel))
 
     logger.info("Bot handlers registered successfully")
