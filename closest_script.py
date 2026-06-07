@@ -1,45 +1,114 @@
-# closest_script.py
+import difflib
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
-def run_closest(sample_path, reference_path, top_n=5, save_plot=False):
-    # Handle both DataFrame and file path inputs
-    if isinstance(sample_path, pd.DataFrame):
-        sample_df = sample_path
-    else:
-        sample_df = pd.read_csv(sample_path, index_col=0)
-    
-    if isinstance(reference_path, pd.DataFrame):
-        ref_df = reference_path
-    else:
-        ref_df = pd.read_csv(reference_path, index_col=0)
 
-    results_texts = []
-    plot_files = []
+# ============================================================
+# CLEAN POPULATION EXTRACTION
+# ============================================================
 
-    for sample_name, sample_coords in sample_df.iterrows():
-        distances = {ref_name: np.linalg.norm(sample_coords - ref_coords) 
-                     for ref_name, ref_coords in ref_df.iterrows()}
-        sorted_dist = sorted(distances.items(), key=lambda x: x[1])
-        top_matches = sorted_dist[:top_n]
+def get_ancient_populations(ancient_df: pd.DataFrame):
+    """
+    Extract clean ancient population names.
+    """
+    if "Population" not in ancient_df.columns:
+        ancient_df["Population"] = ancient_df.index.astype(str).str.split(":").str[0]
 
-        result_text = f"Top {top_n} closest populations to {sample_name}:\n"
-        for name, dist in top_matches:
-            result_text += f"{name}: {dist:.4f}\n"
-        results_texts.append(result_text)
+    return sorted(ancient_df["Population"].dropna().unique().tolist())
 
-        if save_plot:
-            labels = [x[0] for x in top_matches]
-            values = [x[1] for x in top_matches]
-            plt.figure()
-            plt.barh(labels[::-1], values[::-1])
-            plt.title(f"Top {top_n} Closest Populations to {sample_name}")
-            plt.xlabel("Euclidean Distance")
-            plot_file = f"{sample_name}_closest.png"
-            plt.tight_layout()
-            plt.savefig(plot_file)
-            plot_files.append(plot_file)
-            plt.close()
 
-    return "\n".join(results_texts), plot_files
+def get_modern_populations(modern_df: pd.DataFrame):
+    """
+    Extract clean modern population names.
+    Fixes issues like 'Serbian:729' -> 'Serbian'
+    """
+    return sorted(
+        modern_df.index.astype(str)
+        .str.split(":")
+        .str[0]
+        .unique()
+        .tolist()
+    )
+
+
+# ============================================================
+# POPULATION SEARCH (FIXED + STRICT)
+# ============================================================
+
+def search_population(user_input: str, ancient_df, modern_df, max_results=8):
+    """
+    Clean, strict population search for ancestry datasets.
+    """
+
+    ancient_pops = get_ancient_populations(ancient_df)
+    modern_pops = get_modern_populations(modern_df)
+
+    # stronger cutoff (fixes garbage matches like Serbia/Spain spam)
+    ancient_matches = difflib.get_close_matches(
+        user_input,
+        ancient_pops,
+        n=max_results,
+        cutoff=0.55
+    )
+
+    modern_matches = difflib.get_close_matches(
+        user_input,
+        modern_pops,
+        n=max_results,
+        cutoff=0.60
+    )
+
+    return {
+        "ancient": ancient_matches,
+        "modern": modern_matches,
+        "all": ancient_matches + modern_matches
+    }
+
+
+# ============================================================
+# CLEAN POPULATION AVERAGING
+# ============================================================
+
+def get_population_average(pop_name: str, ancient_df, modern_df):
+    """
+    Returns clean averaged PCA vector for a population.
+    """
+
+    # -------------------------
+    # Ancient
+    # -------------------------
+    if pop_name in get_ancient_populations(ancient_df):
+
+        df = ancient_df.copy()
+
+        if "Population" not in df.columns:
+            df["Population"] = df.index.astype(str).str.split(":").str[0]
+
+        group = df[df["Population"] == pop_name].drop(columns=["Population"], errors="ignore")
+
+        if len(group) == 0:
+            return None, None
+
+        avg = group.mean()
+
+        return pd.DataFrame([avg], index=[pop_name]), {
+            "type": "ancient",
+            "n": len(group)
+        }
+
+    # -------------------------
+    # Modern
+    # -------------------------
+    modern_group = modern_df.loc[
+        modern_df.index.astype(str).str.split(":").str[0] == pop_name
+    ]
+
+    if len(modern_group) == 0:
+        return None, None
+
+    avg = modern_group.mean()
+
+    return pd.DataFrame([avg], index=[pop_name]), {
+        "type": "modern",
+        "n": len(modern_group)
+    }
