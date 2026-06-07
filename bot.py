@@ -1,5 +1,263 @@
 #!/usr/bin/env python3
 """
+G25 Ancestry Telegram Bot (Enhanced Version)
+"""
+
+import os
+import io
+import sys
+import logging
+import numpy as np
+import pandas as pd
+import difflib
+from pathlib import Path
+from dotenv import load_dotenv
+
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters,
+    ConversationHandler, ContextTypes
+)
+
+from nnls_script import run_nnls
+from closest_script import run_closest
+from pca_script import run_pca
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+load_dotenv()
+
+CONFIG = {
+    "BOT_TOKEN": os.getenv("BOT_TOKEN"),
+    "ANCIENT_REF_PATH": os.getenv("ANCIENT_REF_PATH"),
+    "MODERN_REF_PATH": os.getenv("MODERN_REF_PATH"),
+    "TEMP_DIR": Path(os.getenv("TEMP_DIR", "./temp")),
+    "LOG_DIR": Path("./logs")
+}
+
+if not CONFIG["BOT_TOKEN"]:
+    raise RuntimeError("BOT_TOKEN is missing")
+
+CONFIG["TEMP_DIR"].mkdir(parents=True, exist_ok=True)
+CONFIG["LOG_DIR"].mkdir(parents=True, exist_ok=True)
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.FileHandler(CONFIG["LOG_DIR"] / "bot.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger("G25-BOT")
+
+# ============================================================
+# DATA LOADING
+# ============================================================
+
+def load_data():
+    ancient = pd.read_csv(CONFIG["ANCIENT_REF_PATH"], index_col=0)
+    modern = pd.read_csv(CONFIG["MODERN_REF_PATH"], index_col=0)
+
+    ancient["Population"] = ancient.index.astype(str).str.split(":").str[0]
+
+    ancient_avg = ancient.groupby("Population").mean()
+
+    return ancient, ancient_avg, modern
+
+
+ancient_df, ancient_avg, modern_df = load_data()
+ANCIENT_POPS = sorted(ancient_avg.index.tolist())
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def suggest(name, pool, n=5):
+    return difflib.get_close_matches(name, pool, n=n, cutoff=0.3)
+
+
+def parse_csv(update):
+    """Handles both paste + file upload safely"""
+    if update.message.document:
+        file = update.message.document.get_file()
+        path = CONFIG["TEMP_DIR"] / f"{file.file_unique_id}.csv"
+        file.download_to_drive(str(path))
+        df = pd.read_csv(path, index_col=0)
+        path.unlink(missing_ok=True)
+    else:
+        df = pd.read_csv(io.StringIO(update.message.text), index_col=0)
+
+    return df
+
+
+def add_history(context, entry):
+    context.user_data.setdefault("history", []).append(entry)
+
+# ============================================================
+# START / HELP
+# ============================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "G25 Ancestry Bot Ready.\n\n"
+        "/nnls\n/closest\n/pca\n/search\n/compare\n/history"
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "NNLS, PCA, closest population analysis using G25 datasets."
+    )
+
+# ============================================================
+# NNLS (SIMPLIFIED CORE)
+# ============================================================
+
+async def nnls_start(update: Update, context):
+    await update.message.reply_text("Paste or upload CSV:")
+    return 0
+
+
+async def nnls_process(update: Update, context):
+    try:
+        df = parse_csv(update)
+
+        result_text, plots = run_nnls(df, ancient_df, save_plot=True)
+
+        await update.message.reply_text(result_text[:4000])
+
+        for p in plots:
+            with open(p, "rb") as f:
+                await update.message.reply_document(f)
+            os.remove(p)
+
+        add_history(context, {"type": "nnls", "n": len(df)})
+
+    except Exception as e:
+        logger.exception(e)
+        await update.message.reply_text("NNLS failed.")
+
+    return ConversationHandler.END
+
+# ============================================================
+# PCA
+# ============================================================
+
+async def pca_start(update, context):
+    await update.message.reply_text("Paste or upload CSV:")
+    return 0
+
+
+async def pca_process(update, context):
+    try:
+        df = parse_csv(update)
+
+        plot = run_pca(df, modern_df, save_plot=True)
+
+        with open(plot, "rb") as f:
+            await update.message.reply_document(f)
+
+        os.remove(plot)
+
+        add_history(context, {"type": "pca", "n": len(df)})
+
+    except Exception as e:
+        logger.exception(e)
+        await update.message.reply_text("PCA failed.")
+
+    return ConversationHandler.END
+
+# ============================================================
+# CLOSEST
+# ============================================================
+
+async def closest_start(update, context):
+    await update.message.reply_text("Paste or upload CSV:")
+    return 0
+
+
+async def closest_process(update, context):
+    try:
+        df = parse_csv(update)
+
+        text, plots = run_closest(df, modern_df, save_plot=True)
+
+        await update.message.reply_text(text[:4000])
+
+        for p in plots:
+            with open(p, "rb") as f:
+                await update.message.reply_document(f)
+            os.remove(p)
+
+        add_history(context, {"type": "closest", "n": len(df)})
+
+    except Exception as e:
+        logger.exception(e)
+        await update.message.reply_text("Closest analysis failed.")
+
+    return ConversationHandler.END
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+async def history(update, context):
+    hist = context.user_data.get("history", [])
+
+    if not hist:
+        await update.message.reply_text("No history yet.")
+        return
+
+    msg = "History:\n\n"
+    for h in hist[-10:]:
+        msg += f"{h}\n"
+
+    await update.message.reply_text(msg)
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    app = Application.builder().token(CONFIG["BOT_TOKEN"]).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("history", history))
+
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("nnls", nnls_start)],
+        states={0: [MessageHandler(filters.ALL, nnls_process)]},
+        fallbacks=[]
+    ))
+
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("pca", pca_start)],
+        states={0: [MessageHandler(filters.ALL, pca_process)]},
+        fallbacks=[]
+    ))
+
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("closest", closest_start)],
+        states={0: [MessageHandler(filters.ALL, closest_process)]},
+        fallbacks=[]
+    ))
+
+    logger.info("Bot running...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()#!/usr/bin/env python3
+"""
 G25 Ancestry Telegram Bot
 Performs ancestry analysis using G25 datasets via Telegram
 """
