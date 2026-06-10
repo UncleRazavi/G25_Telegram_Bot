@@ -33,8 +33,8 @@ ENV PATH=/root/.local/bin:$PATH \
 # Copy project files
 COPY . .
 
-# Create directories for data and logs
-RUN mkdir -p /app/Data /app/logs
+# Create directories for runtime files
+RUN mkdir -p /app/Data /app/logs /app/temp
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

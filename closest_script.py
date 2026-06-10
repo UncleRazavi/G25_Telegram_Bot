@@ -1,6 +1,7 @@
 import difflib
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 # ============================================================
@@ -112,3 +113,58 @@ def get_population_average(pop_name: str, ancient_df, modern_df):
         "type": "modern",
         "n": len(modern_group)
     }
+
+
+def run_closest(sample_df, ancient_df, modern_df, top_n=15, save_plot=False):
+    """
+    Find the closest ancient and modern reference populations for each sample.
+    """
+    ref_frames = []
+
+    ancient_copy = ancient_df.copy()
+    if "Population" not in ancient_copy.columns:
+        ancient_copy["Population"] = ancient_copy.index.astype(str).str.split(":").str[0]
+    ancient_avg = ancient_copy.groupby("Population").mean(numeric_only=True)
+    ancient_avg.index = "Ancient: " + ancient_avg.index.astype(str)
+    ref_frames.append(ancient_avg)
+
+    modern_copy = modern_df.copy()
+    modern_copy["Population"] = modern_copy.index.astype(str).str.split(":").str[0]
+    modern_avg = modern_copy.groupby("Population").mean(numeric_only=True)
+    modern_avg.index = "Modern: " + modern_avg.index.astype(str)
+    ref_frames.append(modern_avg)
+
+    references = pd.concat(ref_frames)
+    common_cols = references.columns.intersection(sample_df.columns)
+    if len(common_cols) == 0:
+        raise ValueError("No matching PCA columns were found between sample and reference data.")
+
+    references = references[common_cols].astype(float)
+    samples = sample_df[common_cols].astype(float)
+
+    lines = ["Closest population matches", ""]
+    plot_files = []
+
+    for sample_name, sample_row in samples.iterrows():
+        distances = np.linalg.norm(references.values - sample_row.values, axis=1)
+        ranking = pd.Series(distances, index=references.index).sort_values().head(top_n)
+
+        lines.append(str(sample_name))
+        lines.append("-" * min(36, max(12, len(str(sample_name)))))
+        for rank, (population, distance) in enumerate(ranking.items(), 1):
+            lines.append(f"{rank:>2}. {population:<36} {distance:.6f}")
+        lines.append("")
+
+        if save_plot:
+            safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(sample_name))
+            plot_file = f"{safe_name}_closest.png"
+            plt.figure(figsize=(9, 6))
+            ranking.sort_values().plot(kind="barh", color="#3f7cac")
+            plt.xlabel("Euclidean distance")
+            plt.title(f"Closest references: {sample_name}")
+            plt.tight_layout()
+            plt.savefig(plot_file, dpi=250, bbox_inches="tight")
+            plt.close()
+            plot_files.append(plot_file)
+
+    return "\n".join(lines).strip(), plot_files

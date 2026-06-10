@@ -7,8 +7,10 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATA_PATH: /app/Data
+      ANCIENT_REF_PATH: /app/Data/Global25_PCA_scaled (Ancient Individuals).csv
+      MODERN_REF_PATH: /app/Data/Global25_PCA_modern_scaled.csv
       TEMP_DIR: /app/temp
+      LOG_DIR: /app/logs
     volumes:
       # Mount data directory
       - ./Data:/app/Data:ro

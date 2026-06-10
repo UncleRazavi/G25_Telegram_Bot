@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: eurogene-g25-bot
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ANCIENT_REF_PATH
+        value: /app/Data/Global25_PCA_scaled (Ancient Individuals).csv
+      - key: MODERN_REF_PATH
+        value: /app/Data/Global25_PCA_modern_scaled.csv
+      - key: TEMP_DIR
+        value: /app/temp
+      - key: LOG_DIR
+        value: /app/logs

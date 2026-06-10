@@ -116,3 +116,13 @@ def run_pca_clean(
 
     plt.show()
     return pca_df
+
+
+def run_pca(sample_df, reference_df, save_plot=True, plot_file="pca_plot.png"):
+    """Compatibility wrapper used by the Telegram bot."""
+    return run_pca_clean(
+        sample_df=sample_df,
+        reference_df=reference_df,
+        save_plot=save_plot,
+        plot_file=plot_file,
+    )
